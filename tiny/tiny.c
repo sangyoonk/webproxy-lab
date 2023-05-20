@@ -11,9 +11,9 @@
 void doit(int fd);
 void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char *filename, char *cgiargs);
-void serve_static(int fd, char *filename, int filesize);
+void serve_static(int fd, char *filename, int filesize, char *method);
 void get_filetype(char *filename, char *filetype);
-void serve_dynamic(int fd, char *filename, char *cgiargs);
+void serve_dynamic(int fd, char *filename, char *cgiargs, char *method);
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg);
 
 
@@ -66,6 +66,9 @@ void doit(int fd)
 {
     int is_static;
     struct stat sbuf;
+    // homework 11.11
+    // char method_flag; // 0: GET, 1: HEAD
+
     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
     char filename[MAXLINE], cgiargs[MAXLINE];
     rio_t rio;
@@ -81,7 +84,7 @@ void doit(int fd)
     /* method가 GET인지 HEAD인지 파악 */
     /* strcasecmp(method, "GET") => method가 GET이면 return 0 => if문에 해당 안됨 */
     /* method가 GET이 아니라면 종료. main으로 가서 연결 닫고 다음 요청 기다림 */
-    if (strcasecmp(method, "GET"))
+    if (strcasecmp(method, "GET") && strcasecmp(method, "HEAD"))
     { // 하나라도 0이면 0
         clienterror(fd, method, "501", "Not implemented", "Tiny does not implement this method");
         return;
@@ -109,7 +112,7 @@ void doit(int fd)
             clienterror(fd, filename, "403", "Forbidden", "Tiny couldn't read the file");
             return;
         }
-        serve_static(fd, filename, sbuf.st_size);
+        serve_static(fd, filename, sbuf.st_size, method); // 정적 컨텐츠 제공
     }
     else
     { /* 동적 컨텐츠인 경우 */
@@ -120,7 +123,7 @@ void doit(int fd)
             clienterror(fd, filename, "403", "Forbidden", "Tiny couldn't run the CGI program");
             return;
         }
-        serve_dynamic(fd, filename, cgiargs);
+        serve_dynamic(fd, filename, cgiargs, method); // 동적 컨텐츠 제공
     }
 }
 
@@ -215,7 +218,7 @@ int parse_uri(char *uri, char *filename, char *cgiargs)
 }
 
 
-void serve_static(int fd, char *filename, int filesize)
+void serve_static(int fd, char *filename, int filesize, char *method)
 {
     int srcfd;
     char *srcp, filetype[MAXLINE], buf[MAXBUF];
@@ -235,20 +238,30 @@ void serve_static(int fd, char *filename, int filesize)
     printf("Response headers:\n");
     printf("%s", buf); // 서버 측에서도 출력한다
 
-    /* Send response body to client */
-    // srcfd = Open(filename, O_RDONLY, 0);                        // filename의 이름을 갖는 파일을 읽기 권한으로 불러온다(열기)
-    // srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); 
-    // Close(srcfd);                                               // 파일을 닫는다.
-    // Rio_writen(fd, srcp, filesize);                             // 해당 메모리에 있는 파일 내용들을 클라이언트에 보낸다(읽는다).                            
-    // Munmap(srcp, filesize);
+    // /* HTTP HEAD 메소드 처리 */
+    // if (strcasecmp(method, "HEAD") == 0)
+    // {
+    //     return; // 응답 바디를 전송하지 않음
+    // }
 
+    // Homework 11.11: HTTP HEAD 메소드 지원
+    if (strcasecmp(method, "GET") == 0)
+    {
+        /* Send response body to client */
+        srcfd = Open(filename, O_RDONLY, 0);                        // filename의 이름을 갖는 파일을 읽기 권한으로 불러온다(열기)
+        srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0); 
+        Close(srcfd);                                               // 파일을 닫는다.
+        Rio_writen(fd, srcp, filesize);                             // 해당 메모리에 있는 파일 내용들을 클라이언트에 보낸다(읽는다).                            
+        Munmap(srcp, filesize);
+    }
+    
     // Homework 11.9: 정적 컨텐츠를 처리할 때 요청 파일 malloc, rio_readn, rio_writen 사용하여 연결 식별자에게 복사
-    srcfd = Open(filename, O_RDONLY, 0);                        // filename의 이름을 갖는 파일을 읽기 권한으로 불러온다(열기)
-    srcp = (char *)malloc(filesize);
-    Rio_readn(srcfd, srcp, filesize);
-    Close(srcfd);
-    Rio_writen(fd, srcp, filesize);
-    free(srcp);
+    // srcfd = Open(filename, O_RDONLY, 0);                        // filename의 이름을 갖는 파일을 읽기 권한으로 불러온다(열기)
+    // srcp = (char *)malloc(filesize);
+    // Rio_readn(srcfd, srcp, filesize);
+    // Close(srcfd);
+    // Rio_writen(fd, srcp, filesize);
+    // free(srcp);
 }
 
 /*
@@ -274,7 +287,7 @@ void get_filetype(char *filename, char *filetype)
         strcpy(filetype, "text/plain");
 }
 
-void serve_dynamic(int fd, char *filename, char *cgiargs)
+void serve_dynamic(int fd, char *filename, char *cgiargs, char *method)
 {
     // fork(): 함수를 호출한 프로세스를 복사하는 기능
     // 부모 프로세스(원래 진행되던 프로세스), 자식 프로세스(복사된 프로세스)
@@ -287,18 +300,23 @@ void serve_dynamic(int fd, char *filename, char *cgiargs)
     sprintf(buf, "Server: Tiny Web server\r\n");
     Rio_writen(fd, buf, strlen(buf));
 
-    if (Fork() == 0) // fork() 자식 프로세스 생성됐으면 0을 반환 (성공)
+    // Homework 11.11: HTTP HEAD 메소드 지원
+    if(strcasecmp(method, "GET") == 0)
     {
-        /* Return first part of HTTP response */
-        // 환경변수를 cigargs로 바꿔주겠다 0: 기존 값 쓰겠다 . 1: cigargs 
-        /* Child */
-        setenv("QUERY_STRING", cgiargs, 1);
-        // old file descriptor, new file descriptor
-        // 화면에 출력할 수 있게끔 띄워주겠다 .
-        Dup2(fd, STDOUT_FILENO);                // Redirect stdout to client
-        Execve(filename, emptylist, environ);   // Run CGI Program
+        if (Fork() == 0) // fork() 자식 프로세스 생성됐으면 0을 반환 (성공)
+        {
+            /* Return first part of HTTP response */
+            // 환경변수를 cigargs로 바꿔주겠다 0: 기존 값 쓰겠다 . 1: cigargs 
+            /* Child */
+            setenv("QUERY_STRING", cgiargs, 1);
+            // old file descriptor, new file descriptor
+            // 화면에 출력할 수 있게끔 띄워주겠다 .
+            Dup2(fd, STDOUT_FILENO);                // Redirect stdout to client
+            Execve(filename, emptylist, environ);   // Run CGI Program
+        }
+        Wait(NULL); // Parent waits for and reaps child
     }
-    Wait(NULL); // Parent waits for and reaps child
+    
 }
 
 /* 
